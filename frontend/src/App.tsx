@@ -24,6 +24,16 @@ import "./App.css";
 
 type SeverityFilter = "ALL" | IssueSeverity;
 
+type GroupedVariantIssue = {
+  groupKey: string;
+  productTitle: string;
+  variantTitle: string;
+  sku: string | null;
+  price: string | number | null;
+  compareAtPrice: string | number | null;
+  issues: ScanIssue[];
+};
+
 const formatDate = (value: string) => {
   return new Intl.DateTimeFormat("en", {
     dateStyle: "medium",
@@ -33,8 +43,11 @@ const formatDate = (value: string) => {
 
 const formatMoney = (value: string | number | null) => {
   if (value === null) return "-";
+
   const numberValue = typeof value === "string" ? Number(value) : value;
+
   if (!Number.isFinite(numberValue)) return "-";
+
   return `$${numberValue.toFixed(2)}`;
 };
 
@@ -63,15 +76,20 @@ const getIssueDescription = (issueType: string) => {
   return descriptions[issueType] || "This product variant needs review.";
 };
 
-const getSeverityClassName = (severity: IssueSeverity) => {
-  if (severity === "CRITICAL") return "issue-card issue-card--critical";
-  if (severity === "WARNING") return "issue-card issue-card--warning";
+const getGroupClassName = (issues: ScanIssue[]) => {
+  const hasCritical = issues.some((issue) => issue.severity === "CRITICAL");
+  const hasWarning = issues.some((issue) => issue.severity === "WARNING");
+
+  if (hasCritical) return "issue-card issue-card--critical";
+  if (hasWarning) return "issue-card issue-card--warning";
+
   return "issue-card issue-card--info";
 };
 
 const IssueSeverityBadge = ({ severity }: { severity: IssueSeverity }) => {
   if (severity === "CRITICAL") return <Badge tone="critical">Critical</Badge>;
   if (severity === "WARNING") return <Badge tone="warning">Warning</Badge>;
+
   return <Badge tone="info">Info</Badge>;
 };
 
@@ -96,28 +114,23 @@ const StatCard = ({
   );
 };
 
-const IssueCard = ({ issue }: { issue: ScanIssue }) => {
+const IssueGroupCard = ({ group }: { group: GroupedVariantIssue }) => {
   return (
-    <div className={getSeverityClassName(issue.severity)}>
+    <div className={getGroupClassName(group.issues)}>
       <BlockStack gap="300">
         <InlineStack align="space-between" blockAlign="start" gap="300">
           <BlockStack gap="100">
-            <InlineStack gap="200" blockAlign="center">
-              <Text as="h3" variant="headingMd">
-                {issue.productTitle}
-              </Text>
-              <IssueSeverityBadge severity={issue.severity} />
-            </InlineStack>
+            <Text as="h3" variant="headingMd">
+              {group.productTitle}
+            </Text>
 
             <Text as="p" tone="subdued">
-              Variant: {issue.variantTitle}
+              Variant: {group.variantTitle}
             </Text>
           </BlockStack>
 
-          <Badge>{getIssueLabel(issue.issueType)}</Badge>
+          <Badge>{`${group.issues.length} issues`}</Badge>
         </InlineStack>
-
-        <Text as="p">{getIssueDescription(issue.issueType)}</Text>
 
         <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
           <div className="mini-metric">
@@ -125,7 +138,7 @@ const IssueCard = ({ issue }: { issue: ScanIssue }) => {
               Price
             </Text>
             <Text as="p" fontWeight="semibold">
-              {formatMoney(issue.price)}
+              {formatMoney(group.price)}
             </Text>
           </div>
 
@@ -134,7 +147,7 @@ const IssueCard = ({ issue }: { issue: ScanIssue }) => {
               Compare-at
             </Text>
             <Text as="p" fontWeight="semibold">
-              {formatMoney(issue.compareAtPrice)}
+              {formatMoney(group.compareAtPrice)}
             </Text>
           </div>
 
@@ -143,20 +156,42 @@ const IssueCard = ({ issue }: { issue: ScanIssue }) => {
               SKU
             </Text>
             <Text as="p" fontWeight="semibold">
-              {issue.sku || "Missing"}
+              {group.sku || "Missing"}
             </Text>
           </div>
         </InlineGrid>
 
         <Divider />
 
-        <BlockStack gap="100">
-          <Text as="p" fontWeight="semibold">
-            Recommended action
-          </Text>
-          <Text as="p" tone="subdued">
-            {issue.recommendation}
-          </Text>
+        <BlockStack gap="300">
+          {group.issues.map((issue) => (
+            <div key={issue.id} className="issue-row">
+              <InlineStack align="space-between" blockAlign="start" gap="300">
+                <BlockStack gap="100">
+                  <InlineStack gap="200" blockAlign="center">
+                    <IssueSeverityBadge severity={issue.severity} />
+
+                    <Text as="p" fontWeight="semibold">
+                      {getIssueLabel(issue.issueType)}
+                    </Text>
+                  </InlineStack>
+
+                  <Text as="p" tone="subdued">
+                    {getIssueDescription(issue.issueType)}
+                  </Text>
+                </BlockStack>
+              </InlineStack>
+
+              <BlockStack gap="100">
+                <Text as="p" fontWeight="semibold">
+                  Recommended action
+                </Text>
+                <Text as="p" tone="subdued">
+                  {issue.recommendation}
+                </Text>
+              </BlockStack>
+            </div>
+          ))}
         </BlockStack>
       </BlockStack>
     </div>
@@ -165,6 +200,7 @@ const IssueCard = ({ issue }: { issue: ScanIssue }) => {
 
 function App() {
   const queryClient = useQueryClient();
+
   const [selectedScan, setSelectedScan] = useState<ScanDetails | null>(null);
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("ALL");
 
@@ -182,10 +218,38 @@ function App() {
     },
   });
 
-  const filteredIssues = useMemo(() => {
+  const groupedIssues = useMemo(() => {
     if (!selectedScan) return [];
-    if (severityFilter === "ALL") return selectedScan.issues;
-    return selectedScan.issues.filter((issue) => issue.severity === severityFilter);
+
+    const issues =
+      severityFilter === "ALL"
+        ? selectedScan.issues
+        : selectedScan.issues.filter(
+            (issue) => issue.severity === severityFilter
+          );
+
+    const groups = new Map<string, GroupedVariantIssue>();
+
+    for (const issue of issues) {
+      const groupKey = `${issue.shopifyProductId}-${issue.shopifyVariantId}`;
+      const existingGroup = groups.get(groupKey);
+
+      if (existingGroup) {
+        existingGroup.issues.push(issue);
+      } else {
+        groups.set(groupKey, {
+          groupKey,
+          productTitle: issue.productTitle,
+          variantTitle: issue.variantTitle,
+          sku: issue.sku,
+          price: issue.price,
+          compareAtPrice: issue.compareAtPrice,
+          issues: [issue],
+        });
+      }
+    }
+
+    return Array.from(groups.values());
   }, [selectedScan, severityFilter]);
 
   const loadScanDetails = async (scanId: string) => {
@@ -199,7 +263,9 @@ function App() {
       <div className="hero">
         <div className="hero__content">
           <Badge tone="info">Shopify GraphQL Admin API demo</Badge>
+
           <h1>Price Anomaly Checker</h1>
+
           <p>
             Scan Shopify product variants for pricing issues, save scan history
             in PostgreSQL, and review merchant-friendly recommendations.
@@ -228,9 +294,11 @@ function App() {
           <Text as="p" tone="subdued">
             Current scan
           </Text>
+
           <Text as="h2" variant="heading2xl">
             {selectedScan ? `${selectedScan.issuesFound}` : "-"}
           </Text>
+
           <Text as="p" tone="subdued">
             total issues detected
           </Text>
@@ -253,8 +321,10 @@ function App() {
             <Card>
               <InlineStack gap="300" align="center">
                 <Spinner size="small" />
+
                 <Text as="p">
-                  Fetching Shopify products, analyzing price data, and saving the report...
+                  Fetching Shopify products, analyzing price data, and saving
+                  the report...
                 </Text>
               </InlineStack>
             </Card>
@@ -266,16 +336,19 @@ function App() {
               value={selectedScan?.productsScanned ?? "-"}
               tone="blue"
             />
+
             <StatCard
               label="Variants scanned"
               value={selectedScan?.variantsScanned ?? "-"}
               tone="purple"
             />
+
             <StatCard
               label="Critical issues"
               value={selectedScan?.criticalCount ?? "-"}
               tone="red"
             />
+
             <StatCard
               label="Warnings"
               value={selectedScan?.warningCount ?? "-"}
@@ -292,8 +365,10 @@ function App() {
                       <Text as="h2" variant="headingLg">
                         Pricing issues
                       </Text>
+
                       <Text as="p" tone="subdued">
-                        Filter by severity and review recommended merchant actions.
+                        Filter by severity and review recommended merchant
+                        actions.
                       </Text>
                     </BlockStack>
 
@@ -311,6 +386,7 @@ function App() {
                       >
                         All
                       </Button>
+
                       <Button
                         size="slim"
                         pressed={severityFilter === "CRITICAL"}
@@ -318,6 +394,7 @@ function App() {
                       >
                         Critical
                       </Button>
+
                       <Button
                         size="slim"
                         pressed={severityFilter === "WARNING"}
@@ -325,6 +402,7 @@ function App() {
                       >
                         Warnings
                       </Button>
+
                       <Button
                         size="slim"
                         pressed={severityFilter === "INFO"}
@@ -340,19 +418,27 @@ function App() {
                       <Text as="h3" variant="headingMd">
                         No scan loaded yet
                       </Text>
+
                       <Text as="p" tone="subdued">
-                        Run a price scan to analyze real products from your Shopify development store.
+                        Run a price scan to analyze real products from your
+                        Shopify development store.
                       </Text>
                     </div>
-                  ) : filteredIssues.length > 0 ? (
+                  ) : groupedIssues.length > 0 ? (
                     <BlockStack gap="300">
-                      {filteredIssues.map((issue) => (
-                        <IssueCard key={issue.id} issue={issue} />
+                      {groupedIssues.map((group) => (
+                        <IssueGroupCard
+                          key={group.groupKey}
+                          group={group}
+                        />
                       ))}
                     </BlockStack>
                   ) : (
                     <Banner tone="success" title="No issues in this filter">
-                      <p>There are no issues matching the selected severity filter.</p>
+                      <p>
+                        There are no issues matching the selected severity
+                        filter.
+                      </p>
                     </Banner>
                   )}
                 </BlockStack>
@@ -370,8 +456,19 @@ function App() {
                     {scansQuery.isLoading ? (
                       <InlineStack gap="300" align="center">
                         <Spinner size="small" />
+
                         <Text as="p">Loading history...</Text>
                       </InlineStack>
+                    ) : null}
+
+                    {scansQuery.isError ? (
+                      <Banner tone="critical" title="Could not load history">
+                        <p>
+                          {scansQuery.error instanceof Error
+                            ? scansQuery.error.message
+                            : "Unknown error"}
+                        </p>
+                      </Banner>
                     ) : null}
 
                     {scansQuery.data?.length ? (
@@ -389,21 +486,36 @@ function App() {
                               <Text as="p" fontWeight="semibold">
                                 {formatDate(scan.createdAt)}
                               </Text>
+
                               <Badge>{`${scan.issuesFound} issues`}</Badge>
                             </InlineStack>
 
                             <Text as="p" tone="subdued">
-                              {scan.productsScanned} products · {scan.variantsScanned} variants
+                              {scan.productsScanned} products ·{" "}
+                              {scan.variantsScanned} variants
                             </Text>
 
                             <InlineStack gap="200">
-                              <Badge tone="critical">{`${scan.criticalCount} critical`}</Badge>
-                              <Badge tone="warning">{`${scan.warningCount} warnings`}</Badge>
-                              <Badge tone="info">{`${scan.infoCount} info`}</Badge>
+                              <Badge tone="critical">
+                                {`${scan.criticalCount} critical`}
+                              </Badge>
+
+                              <Badge tone="warning">
+                                {`${scan.warningCount} warnings`}
+                              </Badge>
+
+                              <Badge tone="info">
+                                {`${scan.infoCount} info`}
+                              </Badge>
                             </InlineStack>
 
-                            <Button size="slim" onClick={() => loadScanDetails(scan.id)}>
-                              {selectedScan?.id === scan.id ? "Selected" : "View scan"}
+                            <Button
+                              size="slim"
+                              onClick={() => loadScanDetails(scan.id)}
+                            >
+                              {selectedScan?.id === scan.id
+                                ? "Selected"
+                                : "View scan"}
                             </Button>
                           </div>
                         ))}
@@ -421,6 +533,7 @@ function App() {
                     <Text as="h2" variant="headingMd">
                       Checks included
                     </Text>
+
                     <div className="check-list">
                       <span>Zero or invalid prices</span>
                       <span>Wrong compare-at prices</span>

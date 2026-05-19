@@ -2,8 +2,6 @@
 node_modules
 
 # Env files
-.env
-.env.local
 .env.*.local
 
 # Build outputs
@@ -29,3 +27,4 @@ frontend/dist
 
 # Misc
 .cache
+config.bat
